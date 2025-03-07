@@ -7,7 +7,7 @@
 #include "aipu_partition.h"
 #include "aipu_common.h"
 #include "zhouyi.h"
-#include "v4.h"
+#include "v3_1.h"
 
 static int init_aipu_cluster(struct aipu_partition *cluster, struct aipu_priv *aipu,
 			     struct platform_device *p_dev, int version)
@@ -27,7 +27,7 @@ static int init_aipu_cluster(struct aipu_partition *cluster, struct aipu_priv *a
 	cluster->irq_obj = cluster->priv->irq_obj;
 	cluster->partition_mode = PARTITION_MODE_NONE;
 	mutex_init(&cluster->reset_lock);
-	cluster->ops = get_zhouyi_v4_ops();
+	cluster->ops = get_zhouyi_v3_1_ops();
 
 	/* unused fields */
 	cluster->reg_attr = NULL;
@@ -40,26 +40,10 @@ static int init_aipu_cluster(struct aipu_partition *cluster, struct aipu_priv *a
 	atomic_set(&cluster->disable, 0);
 
 	cluster->cluster_cnt = 1;
-	val = aipu_read32(cluster->reg, CLUSTER_CONFIG_REG_V4(0));
-	cluster->clusters[0].core_cnt = GET_AIPU_CORE_NUM_V4(val);
-	atomic_set(&cluster->clusters[0].en_core_cnt, GET_AIPU_CORE_NUM_V4(val));
-	cluster->clusters[0].tec_cnt = GET_TEC_NUM_V4(val);
-	cluster->debug_enable = false;
-	cluster->sys_addr = 0;
-
-	/* get partition mode before initialize() */
-	ret = of_property_count_u32_elems(p_dev->dev.of_node, "partition-mode");
-	if (ret <= 0) {
-		dev_info(&p_dev->dev, "use the no partition setting");
-		ret = 0;
-	} else {
-		if (ret != PARTITION_MODE_CORE3_SCP)
-			dev_warn(&p_dev->dev, "invalid partition mode: %d", ret);
-
-		cluster->partition_mode = PARTITION_MODE_CORE3_SCP;
-		dev_warn(&p_dev->dev, "use the core3 SCP partition setting");
-	}
-
+	val = aipu_read32(cluster->reg, CLUSTER_CONFIG_REG_V3_1(0));
+	cluster->clusters[0].core_cnt = GET_AIPU_CORE_NUM_V3_1(val);
+	atomic_set(&cluster->clusters[0].en_core_cnt, GET_AIPU_CORE_NUM_V3_1(val));
+	cluster->clusters[0].tec_cnt = GET_TEC_NUM_V3_1(val);
 	cluster->ops->initialize(cluster);
 
 #ifdef CONFIG_SYSFS
@@ -68,17 +52,13 @@ static int init_aipu_cluster(struct aipu_partition *cluster, struct aipu_priv *a
 					   aipu_common_ext_register_sysfs_store)))
 		dev_err(cluster->dev, "[init_cluster] init sysfs <ext_registers> failed");
 
-	if (IS_ERR(aipu_common_create_attr(cluster->dev, &cluster->inn_reg_attr, "inn_registers",
-					   0644, aipu_common_inn_register_sysfs_show,
-					   aipu_common_inn_register_sysfs_store)))
-		dev_err(cluster->dev, "[init_cluster] init sysfs <inn_register> failed");
 #endif
 
 	cluster->is_init = true;
 	return ret;
 }
 
-static struct aipu_partition *v4_create_cluster(struct aipu_priv *aipu,
+static struct aipu_partition *v3_1_create_cluster(struct aipu_priv *aipu,
 						int id, struct platform_device *p_dev)
 {
 	int ret = 0;
@@ -90,7 +70,7 @@ static struct aipu_partition *v4_create_cluster(struct aipu_priv *aipu,
 		return ERR_PTR(-EINVAL);
 
 	zhouyi_detect_aipu_version(p_dev, &version, &config, NULL);
-	dev_info(&p_dev->dev, "AIPU detected: zhouyi-v4\n");
+	dev_info(&p_dev->dev, "AIPU detected: zhouyi-v3_1\n");
 
 	WARN_ON(!aipu->is_init);
 
@@ -135,7 +115,7 @@ finish:
 	return cluster;
 }
 
-static void v4_destroy_cluster(struct aipu_priv *aipu)
+static void v3_1_destroy_cluster(struct aipu_priv *aipu)
 {
 	int i = 0;
 
@@ -151,24 +131,22 @@ static void v4_destroy_cluster(struct aipu_priv *aipu)
 		for (i = 0; i < aipu->partition_cnt; i++) {
 			aipu_common_destroy_attr(aipu->partitions[i].dev,
 						 &aipu->partitions[i].reg_attr);
-			aipu_common_destroy_attr(aipu->partitions[i].dev,
-						 &aipu->partitions[i].inn_reg_attr);
 		}
 	}
 }
 
-int v4_global_soft_reset(struct aipu_priv *aipu)
+int v3_1_global_soft_reset(struct aipu_priv *aipu)
 {
 	return zhouyi_soft_reset(&aipu->reg, PMU_TOP_SOFT_RESET_REG, aipu->reset_delay_us);
 }
 
-static struct aipu_priv_operations v4_priv_ops = {
-	.create_partitions = v4_create_cluster,
-	.destroy_partitions = v4_destroy_cluster,
-	.global_soft_reset = v4_global_soft_reset,
+static struct aipu_priv_operations v3_1_priv_ops = {
+	.create_partitions = v3_1_create_cluster,
+	.destroy_partitions = v3_1_destroy_cluster,
+	.global_soft_reset = v3_1_global_soft_reset,
 };
 
-struct aipu_priv_operations *get_v4_priv_ops(void)
+struct aipu_priv_operations *get_v3_1_priv_ops(void)
 {
-	return &v4_priv_ops;
+	return &v3_1_priv_ops;
 }

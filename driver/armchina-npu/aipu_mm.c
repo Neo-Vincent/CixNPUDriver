@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2023-2024 Arm Technology (China) Co. Ltd. */
 
-#include <linux/types.h>
-#include <asm/cacheflush.h>
 #include <linux/mm.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -15,8 +13,6 @@
 #include <linux/iommu.h>
 #include <linux/bitmap.h>
 #include <linux/version.h>
-#include <linux/dma-mapping.h>
-#include <linux/acpi.h>
 #include "config.h"
 #include "aipu_priv.h"
 #include "aipu_mm.h"
@@ -195,7 +191,6 @@ int aipu_mm_hold_tcb_buf_alloc(struct aipu_memory_manager *mm, struct aipu_job *
 	if (!curr_tbuf) {
 		dev_err(mm->dev, "no TCB buffer is found at iova 0x%llx", htbuf->head);
 		ret = -EFAULT;
-		spin_unlock_irqrestore(&mm->slock, flags);
 		goto VA_FAIL;
 	}
 
@@ -213,7 +208,6 @@ int aipu_mm_hold_tcb_buf_alloc(struct aipu_memory_manager *mm, struct aipu_job *
 	if (!prev_tbuf) {
 		dev_err(mm->dev, "no TCB buffer is found at iova 0x%llx", desc->last_task_tcb_pa);
 		ret = -EFAULT;
-		spin_unlock_irqrestore(&mm->slock, flags);
 		goto VA_FAIL;
 	}
 	spin_unlock_irqrestore(&mm->slock, flags);
@@ -512,16 +506,19 @@ static struct aipu_mem_region *aipu_mm_create_region(struct aipu_memory_manager 
 		}
 	}
 
-	if(mm->has_iommu) {
+	if (mm->has_iommu) {
 		ret = dma_set_mask_and_coherent(reg->dev, DMA_BIT_MASK(32));
 		if (ret) {
 			dev_err(reg->dev, "DMA set coherent mask failed: idx %d (%d)!\n", idx, ret);
 			goto err;
 		}
-		// limit npu dma address within 3G
-		reg->dev->bus_dma_limit = 0xc0000000;
-	}
 
+#if (KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE)
+		reg->dev->bus_dma_limit = 0xc0000000;
+#elif (KERNEL_VERSION(4, 19, 0) <= LINUX_VERSION_CODE)
+		reg->dev->bus_dma_mask = 0xc0000000;
+#endif
+	}
 	va = dma_alloc_attrs(reg->dev, reg->bytes, &reg->base_pa, GFP_KERNEL, reg->attrs);
 	if (!va) {
 		dev_err(reg->dev, "dma_alloc_attrs failed: idx %d (bytes: 0x%llx, attrs %ld)\n",
@@ -695,7 +692,7 @@ static int aipu_mm_alloc_in_region_no_lock(struct aipu_memory_manager *mm,
 	buf_req->desc.region = reg->type;
 
 	dev_dbg(reg->dev,
-		"allocation in region done: iova 0x%llx, bytes 0x%llx, type %d\n",
+		"allocation in region done: asid %d iova 0x%llx, bytes 0x%llx, type %d\n", buf_req->asid,
 		buf_req->desc.pa, buf_req->desc.bytes, buf_req->data_type);
 	return 0;
 
@@ -798,8 +795,7 @@ static ssize_t aipu_gm_policy_sysfs_show(struct device *dev, struct device_attri
 					 char *buf)
 {
 	struct platform_device *p_dev = container_of(dev, struct platform_device, dev);
-	struct aipu_priv *aipu = platform_get_drvdata(p_dev);
-	struct aipu_partition *partition = aipu->partitions;
+	struct aipu_partition *partition = platform_get_drvdata(p_dev);
 	struct aipu_memory_manager *mm = &partition->priv->mm;
 
 	if (mm->gm_policy == AIPU_GM_POLICY_SHARED) {
@@ -819,8 +815,7 @@ static ssize_t aipu_gm_policy_sysfs_store(struct device *dev, struct device_attr
 					  const char *buf, size_t count)
 {
 	struct platform_device *p_dev = container_of(dev, struct platform_device, dev);
-	struct aipu_priv *aipu = platform_get_drvdata(p_dev);
-	struct aipu_partition *partition = aipu->partitions;
+	struct aipu_partition *partition = platform_get_drvdata(p_dev);
 	struct aipu_memory_manager *mm = &partition->priv->mm;
 
 	mutex_lock(&mm->lock);
@@ -938,6 +933,9 @@ static int aipu_mm_add_reserved_regions(struct aipu_memory_manager *mm)
 					}
 
 					add_region_list(mm, asid, reg);
+					if (asid >= mm->valid_asid_cnt)
+						mm->valid_asid_cnt = asid + 1;
+
 					asid_set = true;
 				} else {
 					break;
@@ -946,6 +944,7 @@ static int aipu_mm_add_reserved_regions(struct aipu_memory_manager *mm)
 
 			if (!asid_set) {
 				dev_err(mm->dev, "dts: reg asid is not set, use default asid\n");
+				mm->valid_asid_cnt = 2;
 				add_region_list(mm, AIPU_BUF_ASID_0, reg);
 				add_region_list(mm, AIPU_BUF_ASID_1, reg);
 			}
@@ -1047,6 +1046,7 @@ int aipu_init_mm(struct aipu_memory_manager *mm, struct platform_device *p_dev, 
 	spin_lock_init(&mm->shlock);
 	mm->default_asid_base = 0;
 	mm->default_asid_size = 0xC0000000;
+	mm->valid_asid_cnt = 0;
 
 	mm->obj_cache = kmem_cache_create("aipu_obj_cache", sizeof(struct aipu_mem_region_obj),
 					  0, SLAB_PANIC, NULL);
@@ -1096,7 +1096,7 @@ int aipu_init_mm(struct aipu_memory_manager *mm, struct platform_device *p_dev, 
 	 * 2: GM is divided half-by-half: for QoS slow & fast tasks, respectively
 	 */
 	if (version == AIPU_ISA_VERSION_ZHOUYI_V3) {
-		ret = device_property_read_u32(mm->dev, "gm-policy", &mm->gm_policy);
+		ret = of_property_read_u32(mm->dev->of_node, "gm-policy", &mm->gm_policy);
 		if (ret || mm->gm_policy > AIPU_GM_POLICY_HALF_DIVIDED)
 			mm->gm_policy = AIPU_GM_POLICY_SHARED;
 
@@ -1115,8 +1115,10 @@ int aipu_init_mm(struct aipu_memory_manager *mm, struct platform_device *p_dev, 
 	}
 
 	group = iommu_group_get(mm->dev);
-	if (group)
+	if (group) {
+		mm->valid_asid_cnt = ZHOUYI_ASID_COUNT;
 		mm->has_iommu = true;
+	}
 	iommu_group_put(group);
 	dev_info(mm->dev, "AIPU is%s behind an IOMMU\n", mm->has_iommu ? "" : " not");
 
@@ -1298,10 +1300,21 @@ alloc:
 	}
 
 	/* fall back to main memory */
-	if (!allocated && !fall_back && type != AIPU_MEM_REGION_TYPE_MEMORY) {
-		type = AIPU_MEM_REGION_TYPE_MEMORY;
-		fall_back = true;
-		goto alloc;
+	if (!allocated && !fall_back) {
+		if (type != AIPU_MEM_REGION_TYPE_MEMORY) {
+			type = AIPU_MEM_REGION_TYPE_MEMORY;
+			fall_back = true;
+			goto alloc;
+		} else if (buf_req->asid > AIPU_BUF_ASID_0){
+			dev_dbg(mm->dev, "fail to malloc memory size 0x%llx from asid %d ",
+				buf_req->bytes, buf_req->asid);
+			buf_req->asid++;
+			dev_dbg(mm->dev, "change new asid %d\n", buf_req->asid);
+			if (buf_req->asid < mm->valid_asid_cnt)
+				goto alloc;
+			else
+				dev_err(mm->dev, "Inalid asid parameter.\n");
+		}
 	}
 
 	WARN_ON(buf_req->desc.pa % (buf_req->align_in_page << PAGE_SHIFT));
@@ -1320,8 +1333,8 @@ tcb_handle:
 			buf_req->bytes, buf_req->align_in_page, buf_req->data_type);
 	} else {
 		dev_dbg(mm->dev,
-			"allocate done (%s): iova 0x%llx, type %d, bytes 0x%llx (al %d, rg %d)\n",
-			fall_back ? "fall back to memory" : "as requested",
+			"allocate done (%s): asid %d iova 0x%llx, type %d, bytes 0x%llx (al %d, rg %d)\n",
+			fall_back ? "fall back to memory" : "as requested", buf_req->asid,
 			buf_req->desc.pa, buf_req->data_type, buf_req->bytes,
 			buf_req->align_in_page, buf_req->desc.region);
 	}
@@ -1389,117 +1402,6 @@ int aipu_mm_free(struct aipu_memory_manager *mm, struct aipu_buf_desc *buf, stru
 
 	if (ret == DEFERRED_FREE)
 		ret = 0;
-
-	return ret;
-}
-
-void tensor_dcache_inval_poc(void *start, void *end) {
-    uintptr_t line_size, addr_start, addr_end, tmp;
-
-    line_size = cache_line_size();
-    tmp = line_size - 1;
-
-    addr_start = (uintptr_t)start;
-    addr_end = (uintptr_t)end;
-
-    if (addr_end & tmp) {
-        addr_end &= ~tmp;
-        __asm__ __volatile__("dc civac, %0" : : "r" (addr_end) : "memory");
-    }
-
-    if (addr_start & tmp) {
-        addr_start &= ~tmp;
-        __asm__ __volatile__("dc civac, %0" : : "r" (addr_start) : "memory");
-        addr_start += line_size;
-    }
-
-    while (addr_start < addr_end) {
-        __asm__ __volatile__("dc ivac, %0" : : "r" (addr_start) : "memory");
-        addr_start += line_size;
-    }
-
-    __asm__ __volatile__("dsb sy" : : : "memory");
-}
-
-static void tensor_flush_dcache_range(void *start, void *end) {
-	uintptr_t addr_start, addr_end;
-	const uint64_t line_size = cache_line_size();
-
-	addr_start = (uintptr_t)start;
-	addr_end = (uintptr_t)end;
-
-	// make sure addr_start and addr_end are cache line aligned
-	addr_start = addr_start & ~(line_size - 1);
-	addr_end = (addr_end + line_size - 1) & ~(line_size - 1);
-
-	while (addr_start < addr_end) {
-		__asm__ volatile ("dc cvac, %0" : : "r" (addr_start) : "memory");
-        addr_start += line_size;
-	}
-
-	// Ensure all cache operations complete
-	__asm__ volatile ("dsb sy" : : : "memory");
-
-}
-
-/**
- * @aipu_mm_cache_flush() - invald buffer allocated by aipu_mm_alloc()
- * @mm:   pointer to memory manager struct initialized in aipu_init_mm()
- * @buf:  pointer to the buffer descriptor to be invalid
- *
- * Return: 0 on success and error code otherwise.
- */
-int aipu_mm_cache_flush(struct aipu_memory_manager *mm, struct aipu_buf_desc *buf)
-{
-	int ret = 0;
-	struct aipu_mem_region *reg = NULL;
-
-	if (!mm || !buf)
-		return -EINVAL;
-
-	reg = aipu_mm_find_region(mm, buf->pa, "flush");
-	if (!reg)
-	{
-		dev_err(mm->dev, "The region of buf->pa 0x%llx not found\n", buf->pa);
-		return 0;
-	}
-
-	if(mm->has_iommu) {
-		mutex_lock(&mm->lock);
-		tensor_flush_dcache_range(reg->base_va, (void *)reg->base_va + reg->bytes);
-		mutex_unlock(&mm->lock);
-	}
-
-	return ret;
-}
-
-/**
- * @aipu_mm_cache_invalid() - invald buffer allocated by aipu_mm_alloc()
- * @mm:   pointer to memory manager struct initialized in aipu_init_mm()
- * @buf:  pointer to the buffer descriptor to be invalid
- *
- * Return: 0 on success and error code otherwise.
- */
-int aipu_mm_cache_invalid(struct aipu_memory_manager *mm, struct aipu_buf_desc *buf)
-{
-	int ret = 0;
-	struct aipu_mem_region *reg = NULL;
-
-	if (!mm || !buf)
-		return -EINVAL;
-
-	reg = aipu_mm_find_region(mm, buf->pa, "invalid");
-	if (!reg)
-	{
-		dev_err(mm->dev, "The region of buf->pa 0x%llx not found\n", buf->pa);
-		return 0;
-	}
-
-	if(mm->has_iommu) {
-		mutex_lock(&mm->lock);
-		tensor_dcache_inval_poc(reg->base_va, (void *)reg->base_va + reg->bytes);
-		mutex_unlock(&mm->lock);
-	}
 
 	return ret;
 }
@@ -1913,13 +1815,20 @@ u64 aipu_mm_get_asid_size(struct aipu_memory_manager *mm, u32 asid)
 
 void aipu_mm_get_asid(struct aipu_memory_manager *mm, struct aipu_cap *cap)
 {
+	int i;
 	if (!mm || !cap)
 		return;
 
-	cap->asid0_base = aipu_mm_get_asid_base(mm, AIPU_BUF_ASID_0);
-	cap->asid1_base = aipu_mm_get_asid_base(mm, AIPU_BUF_ASID_1);
-	cap->asid2_base = aipu_mm_get_asid_base(mm, AIPU_BUF_ASID_2);
-	cap->asid3_base = aipu_mm_get_asid_base(mm, AIPU_BUF_ASID_3);
+	for(i = 0; i < mm->valid_asid_cnt; i++){
+		cap->asid_base[i] = aipu_mm_get_asid_base(mm, i);
+	}
+}
+
+u32 aipu_mm_get_asid_cnt(struct aipu_memory_manager *mm)
+{
+	if (!mm)
+		return 0;
+	return mm->valid_asid_cnt;
 }
 
 int aipu_mm_init_gm(struct aipu_memory_manager *mm, int bytes)

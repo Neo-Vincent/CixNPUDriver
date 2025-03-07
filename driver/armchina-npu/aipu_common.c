@@ -23,14 +23,13 @@ ssize_t aipu_common_ext_register_sysfs_show(struct device *dev,
 	int ret = 0;
 	char tmp[512];
 	struct platform_device *p_dev = container_of(dev, struct platform_device, dev);
-	struct aipu_priv *aipu = platform_get_drvdata(p_dev);
-	struct aipu_partition *partition = aipu->partitions;
+	struct aipu_partition *partition = platform_get_drvdata(p_dev);
 
 	if (unlikely(!partition))
 		return 0;
 
 #ifdef CONFIG_SKY1
-       sky1_npu_pm_runtime_get_sync(aipu->dev);
+       sky1_npu_pm_runtime_get_sync(partition->dev);
 #endif
 	if (get_soc_ops(partition) &&
 	    get_soc_ops(partition)->is_clk_enabled &&
@@ -54,7 +53,7 @@ ssize_t aipu_common_ext_register_sysfs_show(struct device *dev,
 	strcat(buf, tmp);
 
 #ifdef CONFIG_SKY1
-       sky1_npu_pm_runtime_put(aipu->dev);
+       sky1_npu_pm_runtime_put(partition->dev);
 #endif
 	return ret;
 }
@@ -64,8 +63,7 @@ ssize_t aipu_common_ext_register_sysfs_store(struct device *dev,
 					     const char *buf, size_t count)
 {
 	struct platform_device *p_dev = container_of(dev, struct platform_device, dev);
-	struct aipu_priv *aipu = platform_get_drvdata(p_dev);
-	struct aipu_partition *partition = aipu->partitions;
+	struct aipu_partition *partition = platform_get_drvdata(p_dev);
 	int ret = 0;
 	int value[2] = { 0 };
 	struct aipu_io_req io_req;
@@ -76,7 +74,7 @@ ssize_t aipu_common_ext_register_sysfs_store(struct device *dev,
 		return 0;
 
 #ifdef CONFIG_SKY1
-       sky1_npu_pm_runtime_get_sync(aipu->dev);
+       sky1_npu_pm_runtime_get_sync(partition->dev);
 #endif
 
 	ret = sscanf(buf, "%x %x", &value[0], &value[1]);
@@ -98,121 +96,25 @@ ssize_t aipu_common_ext_register_sysfs_store(struct device *dev,
 
 
 #ifdef CONFIG_SKY1
-       sky1_npu_pm_runtime_put(aipu->dev);
+       sky1_npu_pm_runtime_put(partition->dev);
 #endif
 
 	return count;
-}
 
-ssize_t aipu_common_inn_register_sysfs_store(struct device *dev,
-					     struct device_attribute *attr,
-					     const char *buf, size_t count)
-{
-	struct platform_device *p_dev = container_of(dev, struct platform_device, dev);
-	struct aipu_priv *aipu = platform_get_drvdata(p_dev);
-	struct aipu_partition *partition = aipu->partitions;
-	struct aipu_io_req io_req;
-	int value[2] = { 0 };
-	int ret = 0;
 
-	if (unlikely(!partition))
-		return 0;
 
-	if (get_soc_ops(partition) &&
-	    get_soc_ops(partition)->is_clk_enabled &&
-	    !get_soc_ops(partition)->is_clk_enabled(dev, get_soc(partition)))
-		return 0;
 
-	if (!partition->debug_enable) {
-		if (!strncmp(buf, "enable", 6)) {
-			if (partition->ops->enable_debug_mode) {
-				partition->debug_enable = true;
-				partition->sys_addr = 0;
-				partition->ops->enable_debug_mode(partition);
-				return count;
-			}
-		} else {
-			dev_info(dev, "echo \"enable\" > inn_registers\n");
-			return -EINVAL;
-		}
-	} else if (partition->debug_enable) {
-		if (!strncmp(buf, "disable", 7) && partition->ops->disable_debug_mode) {
-			partition->debug_enable = false;
-			partition->sys_addr = 0;
-			partition->ops->disable_debug_mode(partition);
-			return count;
-		}
-	}
 
-	ret = sscanf(buf, "%x %x", &value[0], &value[1]);
-	if (ret == ADDR_VALUE) {
-		io_req.rw = AIPU_IO_WRITE;
-		io_req.offset = value[0];
-		partition->sys_addr = value[0];
-		io_req.value = value[1];
-	} else if (ret == ADDR_ONLY) {
-		partition->sys_addr = value[0];
-	} else {
-		dev_info(dev, "echo \"addr_hex  value_hex\" > inn_registers ret = %d\n", ret);
-		return -EINVAL;
-	}
 
-	if (partition->sys_addr % 4 != 0) {
-		dev_err(dev, "0x%x 4 bytes alignment!\n", partition->sys_addr);
-		return -EINVAL;
-	}
 
-	if (partition->ops->io_rw && ret == ADDR_VALUE) {
-		dev_info(dev, "write offset 0x%x, value 0x%x", value[0], value[1]);
-		partition->ops->io_rw(partition, &io_req);
-	}
 
-	return count;
-}
 
-ssize_t aipu_common_inn_register_sysfs_show(struct device *dev,
-					    struct device_attribute *attr,
-					    char *buf)
-{
-	struct aipu_io_req io_req;
-	struct platform_device *p_dev = container_of(dev, struct platform_device, dev);
-	struct aipu_priv *aipu = platform_get_drvdata(p_dev);
-	struct aipu_partition *partition = aipu->partitions;
 
-	if (unlikely(!partition))
-		return 0;
 
-	if (get_soc_ops(partition) &&
-	    get_soc_ops(partition)->is_clk_enabled &&
-	    !get_soc_ops(partition)->is_clk_enabled(dev, get_soc(partition))) {
-		return snprintf(buf, MAX_CHAR_SYSFS,
-		    "AIPU is suspended and inn registers cannot be read!\n");
-	}
 
-	if (!partition->debug_enable)
-		return snprintf(buf, MAX_CHAR_SYSFS, "debug mode disable\n");
 
-	io_req.rw = AIPU_IO_READ;
-	io_req.value = 0;
-	if (partition->sys_addr == ZHOUYI_DEBUG_INN_REG_TEC_W) {
-		io_req.offset = ZHOUYI_DEBUG_INN_REG_TEC_R;
-		partition->ops->io_rw(partition, &io_req);
-	} else if (partition->sys_addr == ZHOUYI_DEBUG_INN_REG_MMR_W) {
-		io_req.offset = ZHOUYI_DEBUG_INN_REG_MMR_R;
-		partition->ops->io_rw(partition, &io_req);
-	} else {
-		io_req.offset = partition->sys_addr;
-		if (partition->sys_addr != 0 && partition->sys_addr % 4 == 0)
-			partition->ops->io_rw(partition, &io_req);
-		else
-			return snprintf(buf, MAX_CHAR_SYSFS, "0x%x 4 bytes alignment!\n",
-				partition->sys_addr);
-	}
 
-	dev_info(dev, "sys_addr 0x%08x offset 0x%08x value 0x%08x\n",
-		 partition->sys_addr, io_req.offset, io_req.value);
 
-	return snprintf(buf, MAX_CHAR_SYSFS, "0x%08x\n", io_req.value);
 }
 
 ssize_t aipu_common_clock_sysfs_show(struct device *dev,
@@ -220,8 +122,7 @@ ssize_t aipu_common_clock_sysfs_show(struct device *dev,
 				     char *buf)
 {
 	struct platform_device *p_dev = container_of(dev, struct platform_device, dev);
-	struct aipu_priv *aipu = platform_get_drvdata(p_dev);
-	struct aipu_partition *partition = aipu->partitions;
+	struct aipu_partition *partition = platform_get_drvdata(p_dev);
 
 	/*
 	 * If SoC level provides no clock operations,
@@ -243,8 +144,7 @@ ssize_t aipu_common_clock_sysfs_store(struct device *dev,
 	int do_suspend = 0;
 	int do_resume = 0;
 	struct platform_device *p_dev = container_of(dev, struct platform_device, dev);
-	struct aipu_priv *aipu = platform_get_drvdata(p_dev);
-	struct aipu_partition *partition = aipu->partitions;
+	struct aipu_partition *partition = platform_get_drvdata(p_dev);
 
 	if (unlikely(!partition))
 		return count;
@@ -280,8 +180,7 @@ ssize_t aipu_common_disable_sysfs_show(struct device *dev, struct device_attribu
 				       char *buf)
 {
 	struct platform_device *p_dev = container_of(dev, struct platform_device, dev);
-	struct aipu_priv *aipu = platform_get_drvdata(p_dev);
-	struct aipu_partition *partition = aipu->partitions;
+	struct aipu_partition *partition = platform_get_drvdata(p_dev);
 
 	if (atomic_read(&partition->disable)) {
 		return snprintf(buf, MAX_CHAR_SYSFS,
@@ -299,8 +198,7 @@ ssize_t aipu_common_disable_sysfs_store(struct device *dev, struct device_attrib
 {
 	int do_disable = 0;
 	struct platform_device *p_dev = container_of(dev, struct platform_device, dev);
-	struct aipu_priv *aipu = platform_get_drvdata(p_dev);
-	struct aipu_partition *partition = aipu->partitions;
+	struct aipu_partition *partition = platform_get_drvdata(p_dev);
 
 	if ((strncmp(buf, "1", 1) == 0))
 		do_disable = 1;

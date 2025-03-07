@@ -56,8 +56,6 @@ struct aipu_operations {
 	int (*sysfs_show)(struct aipu_partition *aipu, char *buf);
 #endif
 	int (*soft_reset)(struct aipu_partition *aipu, bool init_regs);
-	bool (*enable_debug_mode)(struct aipu_partition *aipu);
-	bool (*disable_debug_mode)(struct aipu_partition *aipu);
 	void (*initialize)(struct aipu_partition *aipu);
 	int (*destroy_command_pool)(struct aipu_partition *partition, int pool);
 	int (*abort_command_pool)(struct aipu_partition *partition, int pool);
@@ -107,8 +105,8 @@ struct cluster_info {
  * @dtcm_size:       DTCM size in bytes
  * @cluster_cnt:     cluster count
  * @clusters:        cluster information array
- * @partition_mode:  partition mode in a cluster (for zhouyi v4 only)
- * @event_type:      interrupt's event type (for zhouyi v4 only)
+ * @partition_mode:  partition mode in a cluster (for zhouyi v3_1 only)
+ * @event_type:      interrupt's event type (for zhouyi v3_1 only)
  */
 struct aipu_partition {
 	u32 id;
@@ -125,7 +123,6 @@ struct aipu_partition {
 	struct device_attribute *reg_attr;
 	struct device_attribute *clk_attr;
 	struct device_attribute *disable_attr;
-	struct device_attribute *inn_reg_attr;
 	atomic_t disable;
 	int is_init;
 	struct mutex reset_lock; /* Protect soft reset */
@@ -136,8 +133,6 @@ struct aipu_partition {
 	struct cluster_info clusters[8];
 	int partition_mode;
 	int event_type;
-	bool debug_enable;
-	u32 sys_addr;
 };
 
 /**

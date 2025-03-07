@@ -165,6 +165,7 @@ static int zhouyi_v3_destroy_command_pool(struct aipu_partition *partition, int 
 		aipu_write32(partition->reg, TSM_STATUS_REG, CLEAR_CMD_FAIL(status));
 		zhouyi_v3_abort_command_pool(partition, ZHOUYI_COMMAND_POOL_DEFAULT);
 		zhouyi_v3_destroy_command_pool_internal(partition);
+		status = aipu_read32(partition->reg, TSM_STATUS_REG);
 		if (IS_CMD_FAIL(status)) {
 			aipu_write32(partition->reg, TSM_STATUS_REG, CLEAR_CMD_FAIL(status));
 			return -EFAULT;

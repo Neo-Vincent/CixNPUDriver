@@ -3,7 +3,6 @@
 
 #include <linux/platform_device.h>
 #include <linux/of.h>
-#include <linux/acpi.h>
 #include "aipu_priv.h"
 #include "aipu_partition.h"
 #include "aipu_common.h"
@@ -104,9 +103,7 @@ static struct aipu_partition *v3_create_partitions(struct aipu_priv *aipu,
 	 * Both ids of clusters and partitions should be u32 numbered as 0, 1, 2, 3, ...
 	 * One cluster should only be within one partition.
 	 */
-
-	ret = device_property_count_u32(&p_dev->dev, "cluster-partition");
-
+	ret = of_property_count_u32_elems(p_dev->dev.of_node, "cluster-partition");
 	if (ret <= 0) {
 		dev_warn(&p_dev->dev, "use the default config (1 cluster)");
 		ret = 2;
@@ -116,11 +113,10 @@ static struct aipu_partition *v3_create_partitions(struct aipu_priv *aipu,
 	WARN_ON(!cluster_cnt);
 
 	cluster_arr = devm_kzalloc(&p_dev->dev, cluster_cnt * 2 * sizeof(u32), GFP_KERNEL);
-	if (device_property_read_u32_array(&p_dev->dev, "cluster-partition", cluster_arr,
-				       cluster_cnt * 2)) {
-		dev_err(&p_dev->dev, "check your dts: read cluster-partition failed");
-		return ERR_PTR(-EINVAL);
-	}
+
+	/* use default configuration if no cluster-partition presents in dts */
+	of_property_read_u32_array(p_dev->dev.of_node, "cluster-partition", cluster_arr,
+				   cluster_cnt * 2);
 
 	for (iter = 0; iter < cluster_cnt; iter++) {
 		if (cluster_arr[2 * iter + 1] > (partition_cnt - 1))
