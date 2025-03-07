@@ -206,6 +206,7 @@ struct aipu_memory_manager {
 	struct device *dev;
 	struct mutex lock; /* Protect sram disabled head/importer bufs struct */
 	int res_cnt;
+	u32 valid_asid_cnt;
 	struct aipu_mem_region_list mem;
 	struct aipu_mem_region_list ase[ZHOUYI_ASID_COUNT];
 	int gm_bytes;
@@ -233,8 +234,6 @@ int aipu_mm_alloc(struct aipu_memory_manager *mm, struct aipu_buf_request *buf_r
 		  struct file *filp);
 int aipu_mm_free(struct aipu_memory_manager *mm, struct aipu_buf_desc *buf, struct file *filp,
 		 bool unlock);
-int aipu_mm_cache_flush(struct aipu_memory_manager *mm, struct aipu_buf_desc *buf);
-int aipu_mm_cache_invalid(struct aipu_memory_manager *mm, struct aipu_buf_desc *buf);
 void aipu_mm_free_buffers(struct aipu_memory_manager *mm, struct file *filp);
 char *aipu_mm_get_va(struct aipu_memory_manager *mm, u64 dev_pa);
 int aipu_mm_mmap_buf(struct aipu_memory_manager *mm, struct vm_area_struct *vma,
@@ -244,6 +243,7 @@ int aipu_mm_enable_sram_allocation(struct aipu_memory_manager *mm, struct file *
 void aipu_mm_get_asid(struct aipu_memory_manager *mm, struct aipu_cap *cap);
 u64 aipu_mm_get_asid_base(struct aipu_memory_manager *mm, u32 asid);
 u64 aipu_mm_get_asid_size(struct aipu_memory_manager *mm, u32 asid);
+u32 aipu_mm_get_asid_cnt(struct aipu_memory_manager *mm);
 int aipu_mm_init_gm(struct aipu_memory_manager *mm, int bytes);
 int aipu_mm_gm_policy_switch(struct aipu_memory_manager *mm, enum aipu_gm_policy next);
 void aipu_mm_get_gm(struct aipu_memory_manager *mm, struct aipu_cap *cap);

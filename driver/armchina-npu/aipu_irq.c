@@ -6,12 +6,11 @@
 #include <linux/irqreturn.h>
 #include "aipu_irq.h"
 #include "aipu_partition.h"
-#include "aipu_priv.h"
 
 static irqreturn_t aipu_irq_handler_upper_half(int irq, void *dev_id)
 {
-	struct aipu_priv *aipu =(((struct device *)dev_id)->driver_data);
-	struct aipu_partition *partition = aipu->partitions;
+	struct aipu_partition *partition =
+		(struct aipu_partition *)(((struct device *)dev_id)->driver_data);
 
 	if (partition && partition->ops && partition->ops->upper_half)
 		return partition->ops->upper_half(partition);
